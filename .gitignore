@@ -1,0 +1,9 @@
+.Rproj.user
+GSE111629_RAW
+.git
+.RData
+.Rhistory
+*.swp
+*.rds
+.DStore
+*.Rproj
