@@ -183,3 +183,6 @@ pheatmap(top_beta,
          show_colnames = F,
          main = "Top 10 Differentially Methylated Probes",
          scale = "row")
+
+colnames(annotated_results)
+abs(-1)

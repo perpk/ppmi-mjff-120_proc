@@ -111,9 +111,8 @@ densityPlot(rg_set, sampGroups = targets$Sample_Group, main = "Beta Value Distri
 #### cleanup
 
 ```{r}
-rm(list = setdiff(ls(), "rg_set"))
+rm(list = setdiff(ls(), c("rg_set", "targets")))
 gc(full = TRUE)
-
 ```
 
 ### 10. Normalize raw data via Normal-exponential out-of-the-band method (noob)
@@ -131,7 +130,7 @@ methyl_set <- preprocessNoob(rg_set)
 
 ```{r}
 saveRDS(methyl_set, "methyl_set.rds")
-rm(rg_set)
+# rm(rg_set)
 gc(full = TRUE)
 ```
 
@@ -142,7 +141,8 @@ ii. Create a logical vector by identifying probes to *keep*
 iii. Subset the `methyl_set` by removing all probes that failed the detection threshold in any sample
 
 ```{r}
-detP <- detectionP(readRDS("rg_set.rds"))
+detP <- detectionP(rg_set)
+# detP <- detectionP(readRDS("rg_set.rds"))
 keep <- rowSums(detP < 0.01) == ncol(methyl_set)
 methyl_set <- methyl_set[keep, ]
 print(paste("Probes after detection p-value filter:", nrow(methyl_set)))
@@ -166,7 +166,7 @@ ii. Create a list of probes that are known to be cross-reactive by focusing on I
 ```{r}
 library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
 ann_450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
-cross_reactive <- ann_450k$Name[ann_450k$Probe_Type %in% c("I") & ann_450k$MASK_general == TRUE]
+cross_reactive <- ann_450k$Name[ann_450k$MASK_general == TRUE]
 methyl_set <- readRDS("methyl_set_filtered.rds")
 methyl_set <- methyl_set[!rownames(methyl_set) %in% cross_reactive, ]
 print(paste("Probes after removing cross-reactive probes:", nrow(methyl_set)))
@@ -278,16 +278,16 @@ write.csv(annotated_results, "differential_methylation_results.csv", row.names =
 
 ```{r}
 library(ggplot2)
-volcano_plot <- ggplot(annotated_results, aes(x = logFC, y = -log10(P.Value))) +
-  geom_point(alpha = 0.6, aes(color = adj.P.Val < 0.05)) +
+volcano_plot <- ggplot(annotated_results, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(alpha = 0.6, aes(color = (adj.P.Val < 0.05 & abs(logFC) > 0.1))) +
   geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
-  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_vline(xintercept = c(-0.1, 0.1), linetype = "dashed") +
   ggtitle("Volcano Plot of Differential Methylation") +
   theme_minimal()
 print(volcano_plot)
 ```
 
-### 23. Visualize a Heatmap with the 10-top most methylated probes
+![Volcano Plot - Differentially Methylated Probes](./volcano_plot.png) \### 23. Visualize a Heatmap with the 10-top most methylated probes
 
 ```{r}
 library(pheatmap)
@@ -306,4 +306,4 @@ pheatmap(top_beta,
 
 ```
 
-![Heatmap](./heatmap-top10_meth.png)
+![Heatmap Top 10 Methylated Probes](./heatmap-top10_meth.png)
