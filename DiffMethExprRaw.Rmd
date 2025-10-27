@@ -111,7 +111,7 @@ densityPlot(rg_set, sampGroups = targets$Sample_Group, main = "Beta Value Distri
 #### cleanup
 
 ```{r}
-rm(list = setdiff(ls(), c("rg_set", "targets")))
+rm(list = setdiff(ls(), c("targets", "design")))
 gc(full = TRUE)
 ```
 
@@ -123,6 +123,7 @@ ii. `methyl_set` -\> result: contains background-corrected and dye-bias-normaliz
 **This step removes major technical artifacts from the data making the methylation values more comparable across samples and suitable for downstream technical analysis**
 
 ```{r}
+rg_set <- readRDS("rg_set_autosomal.rds")
 methyl_set <- preprocessNoob(rg_set)
 ```
 
@@ -130,7 +131,7 @@ methyl_set <- preprocessNoob(rg_set)
 
 ```{r}
 saveRDS(methyl_set, "methyl_set.rds")
-# rm(rg_set)
+rm(list = setdiff(ls(), c("rg_set", "methyl_set", "targets", "design")))
 gc(full = TRUE)
 ```
 
@@ -141,59 +142,92 @@ ii. Create a logical vector by identifying probes to *keep*
 iii. Subset the `methyl_set` by removing all probes that failed the detection threshold in any sample
 
 ```{r}
+rg_set <- readRDS("rg_set_autosomal.rds")
+methyl_set <- readRDS("methyl_set.rds")
 detP <- detectionP(rg_set)
 # detP <- detectionP(readRDS("rg_set.rds"))
 keep <- rowSums(detP < 0.01) == ncol(methyl_set)
-methyl_set <- methyl_set[keep, ]
+keep_common <- keep[rownames(methyl_set)]
+methyl_set <- methyl_set[keep_common, ]
 print(paste("Probes after detection p-value filter:", nrow(methyl_set)))
 saveRDS(methyl_set, "methyl_set_filtered.rds")
 ```
 
-#### cleanup
+#### cleanup - continue from here 26/10
 
 ```{r}
 rm(detP, keep)
 gc(full = TRUE)
 ```
 
-### 12. Remove Cross-Reactive Probes
+### 12. Remove Cross-Reactive Probes and Single Nucleotide  Polymorphisms
 
 **Remove probes that are not specific to one genomic location. Cross-reactive probes can hybridize to multiple places in the genome, making their methylation signals uninterpretable and introducing noise into the analysis.**
+
+**Remove SNPs to filter out noisy inter-individual variations without probable contribution to the phenotype**
 
 i.  Load the library that contains the annotation database specific for the 450k array with detailed information about each probe.
 ii. Create a list of probes that are known to be cross-reactive by focusing on Infinium type "I" probes (`c("I")`)
 
+
 ```{r}
 library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+
 ann_450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
-cross_reactive <- ann_450k$Name[ann_450k$MASK_general == TRUE]
+
+cross_reactive_probes <- read.csv("https://github.com/sirselim/illumina450k_filtering/raw/master/48639-non-specific-probes-Illumina450k.csv", header = TRUE)
+cross_reactive <- cross_reactive_probes$TargetID 
+snp <- ann_450k$Name[ann_450k$MASK_snp5 | ann_450k$Probe_maf > 0.01]
 methyl_set <- readRDS("methyl_set_filtered.rds")
+print(paste("Original probes in dataset:", nrow(getBeta(methyl_set))))
 methyl_set <- methyl_set[!rownames(methyl_set) %in% cross_reactive, ]
 print(paste("Probes after removing cross-reactive probes:", nrow(methyl_set)))
+# methyl_set <- methyl_set[!rownames(methyl_set) %in% snp, ]
+methyl_set_genomic <- mapToGenome(methyl_set)
+methyl_set_clean <- dropLociWithSnps(methyl_set_genomic, snps = c("CpG", "SBE"), maf=0.01)
+print(paste("Probes after removing single nucleotide polymorphisms:", nrow(methyl_set_clean)))
+saveRDS(methyl_set_clean, "methyl_set_clean.rds")
 ```
 
 #### cleanup
 
 ```{r}
-rm(methyl_set)
+rm(list = setdiff(ls(), c("targets", "design")))
 gc(full = TRUE)
 ```
 
-### 13. Remove probes on sex chromosomes
+### 13a. Retrieve cell count estimation (TODO move upwards)
 
 ```{r}
-methyl_set <- readRDS("methyl_set_filtered.rds")
-ann_450k_sub <- ann_450k[rownames(methyl_set), ]
-keep_auto <- !(ann_450k_sub$chr %in% c("chrX", "chrY"))
-methyl_set <- methyl_set[keep_auto, ]
+BiocManager::install("FlowSorted.Blood.450k")
+library(FlowSorted.Blood.450k)
+rg_set <- readRDS("rg_set.rds")
+cell_counts <- estimateCellCounts(rg_set, compositeType="Blood", probeSelect="IDOL")
+targets <- cbind(targets, cell_counts)
+```
+
+
+
+### 13b. Remove probes on sex chromosomes
+
+```{r}
+methyl_set <- readRDS("methyl_set_clean.rds")
+autosomal_probes <- !(seqnames(methyl_set) %in% c("chrX", "chrY"))
+methyl_set_final <- methyl_set[autosomal_probes, ]
 print(paste("Probes after removing sex chromosomes:", nrow(methyl_set)))
 saveRDS(methyl_set, "methyl_set_filtered_chrom.rds")
+
+#ann_450k_sub <- ann_450k[rownames(methyl_set), ]
+#keep_auto <- !(ann_450k_sub$chr %in% c("chrX", "chrY"))
+#methyl_set <- methyl_set[keep_auto, ]
+#print(paste("Probes after removing sex chromosomes:", nrow(methyl_set)))
+#saveRDS(methyl_set, "methyl_set_filtered_chrom.rds")
 ```
 
 #### cleanup
 
 ```{r}
-rm(methyl_set)
+rm(list = setdiff(ls(), c("targets", "design")))
 gc(full = TRUE)
 ```
 
@@ -219,7 +253,60 @@ rm(methyl_set)
 gc(full = TRUE)
 ```
 
+## Exploratory Data Analusis
+
+### PCA
+
+```{r}
+library(ggplot2)
+library(reshape2)
+
+pca <- prcomp(t(beta_matrix))
+pca_df <- as.data.frame(pca$x[, 1:5])
+pca_df$Sample_Group <- targets$Sample_Group
+pca_df$Sex <- targets$`gender:ch1`
+pca_df$Age <- targets$`age:ch1`
+pca_df$DiseaseState <- targets$`disease state:ch1`
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Sex)) +
+  geom_point(size = 3) + ggtitle("PCA by Biological Gender")
+```
+
+
+```{r}
+cell_vars <- c("CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
+
+cell_melt <- melt(targets[, c("Sample_Group", cell_vars)], id.vars = "Sample_Group")
+ggplot(cell_melt, aes(x = Sample_Group, y = value, fill = Sample_Group)) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free_y") +
+  ggtitle("Cell Composition by Disease Group")
+```
+
+```{r}
+design <- model.matrix(~0 + Sample_Group + 
+                       `gender:ch1` + 
+                       `age:ch1` + 
+                       CD8T + CD4T + NK + Bcell + Mono + Gran, 
+                       data = targets)
+
+colnames(design) <- gsub("Control", "", colnames(design))
+colnames(design) <- gsub("`gender:ch1`Male", "Male", colnames(design))
+
+print("Design matrix columns:")
+print(colnames(design))
+print("Design matrix dimensions:")
+print(dim(design))
+
+cor_matrix <- cor(design[, -1])
+heatmap(cor_matrix, 
+        main = "Covariate Correlation Matrix",
+        margins = c(10, 10))
+```
+
 ## Differential Methylation Analysis
+
+## Differentially Methylated Probes
 
 ### 15. Setup statistical modelling
 
@@ -231,6 +318,9 @@ colnames(design) <- levels(targets$Sample_Group)
 ### 16. Fit linear model
 
 ```{r}
+if (!(exists("m_values"))) {
+  m_values = readRDS("m_values.rds")
+}
 fit <- lmFit(m_values, design)
 ```
 
@@ -287,7 +377,9 @@ volcano_plot <- ggplot(annotated_results, aes(x = logFC, y = -log10(adj.P.Val)))
 print(volcano_plot)
 ```
 
-![Volcano Plot - Differentially Methylated Probes](./volcano_plot.png) \### 23. Visualize a Heatmap with the 10-top most methylated probes
+![Volcano Plot - Differentially Methylated Probes](./volcano_plot.png) 
+
+### 23. Visualize a Heatmap with the 10-top most methylated probes
 
 ```{r}
 library(pheatmap)
@@ -307,3 +399,106 @@ pheatmap(top_beta,
 ```
 
 ![Heatmap Top 10 Methylated Probes](./heatmap-top10_meth.png)
+## Differentially Methylated Regions
+
+### 24. Prepare annotation object for DMR analysis
+
+```{r}
+results <- topTable(fit2, number = Inf, coef = "Parkinsons_vs_Control")
+
+if (!(exists("ann_450k"))) {
+  ann_450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+}
+
+dmr_input <- data.frame(
+  probecpg = rownames(results),  # Probe ID
+  chr = ann_450k[rownames(results), "chr"],
+  pos = ann_450k[rownames(results), "pos"],
+  pval = results$P.Value,
+  betafc = results$logFC
+)
+```
+
+### 25. Perform DMR analysis
+
+```{r}
+dmrcoutput <- dmrcate(dmr_input, 
+                      lambda = 1000, 
+                      C = 2)
+
+results.ranges <- extractRanges(dmrcoutput, genome = "hg19")
+
+
+```
+
+```{r}
+annotated_methyl_results <- read.csv("./differential_methylation_results.csv", header = T)
+top_dmps <- annotated_methyl_results %>%
+  filter(adj.P.Val < 0.05 & abs(logFC) > 0.1) %>%
+  arrange(adj.P.Val)
+beta_matrix <- readRDS("beta_matrix.rds")
+ml_beta_matrix <- beta_matrix[top_dmps$ProbeID, ]
+
+ml_data <- data.frame(
+  t(ml_beta_matrix),
+  Sample_Group = targets$Sample_Group
+)
+
+ml_data$Age <- targets$`age:ch1`
+ml_data$Gender <- targets$`gender:ch1`
+ml_data$Ethnicity <- targets$`ethnicity:ch1`
+ml_data$DiseaseState <- targets$`disease state:ch1`
+
+write.csv(ml_data, "/Volumes/Elements/pd-methyl/code/data/GSE111629/methyl_ml_data.csv", row.names = T)
+```
+
+```{r}
+feature_annotation <- annotated_methyl_results %>%
+  select(ProbeID, chr, pos, UCSC_RefGene_Name, UCSC_RefGene_Group, Relation_to_Island) %>%
+  filter(ProbeID %in% top_dmps$ProbeID)
+```
+
+```{r}
+write.csv(feature_annotation, "/Volumes/Elements/pd-methyl/code/data/GSE111629/feature_annotations.csv", row.names = F)
+```
+
+```{r}
+gene_importance <-read.csv("/Volumes/Elements/pd-methyl/code/data/GSE111629/gene_importance.csv")
+```
+
+```{r}
+BiocManager::install("clusterProfiler")
+```
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+top_predictive_genes <- gene_importance$UCSC_RefGene_Name[1:2000]
+top_predictive_genes <- unique(unlist(strsplit(top_predictive_genes, ";")))
+
+gene_df <- bitr(top_predictive_genes, fromType="SYMBOL", toType="ENTREZID", OrgDb = org.Hs.eg.db)
+ego <- enrichGO(gene = gene_df$ENTREZID, OrgDb = org.Hs.eg.db, ont="BP", pAdjustMethod = "BH", qvalueCutoff = 0.05, readable=T)
+```
+
+```{r}
+head(ego)
+```
+
+```{r}
+library(missMethyl)
+
+top_predictive_cpgs <- feature_annotation$ProbeID[1:1000]
+all_cpgs <- rownames(ml_beta_matrix)
+gsea_results <- gometh(sig.cpg = top_predictive_cpgs, all.cpg = all_cpgs, collection="GO")
+```
+```{r}
+head(gsea_results[order(gsea_results$FDR), ])
+```
+```{r}
+kegg_results <- gometh(sig.cpg = top_predictive_cpgs, all.cpg = all_cpgs, collection="KEGG")
+```
+
+```{r}
+head(gsea_results[order(kegg_results$FDR), ])
+```
