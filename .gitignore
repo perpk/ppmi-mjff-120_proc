@@ -1,9 +1,10 @@
 .Rproj.user
 GSE111629_RAW
 .git
-.RData*
+*.RData*
 .Rhistory
 *.swp
 *.rds
 .DS_Store
 *.Rproj
+*.csv
